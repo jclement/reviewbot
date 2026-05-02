@@ -59,32 +59,36 @@
     body.persona-butler .accent-border { border-color: #b45309; }
     body.persona-butler header { background-color: rgba(40, 28, 8, 0.7) !important; }
     body.persona-butler { font-family: Georgia, "Times New Roman", ui-serif, serif; }
-    body.persona-butler .prose-rb { font-family: Georgia, "Times New Roman", ui-serif, serif; }
+    body.persona-butler .prose.prose-rb { font-family: Georgia, "Times New Roman", ui-serif, serif; }
     body.persona-butler pre, body.persona-butler code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-    /* Prose tweaks for our dark theme */
-    .prose-rb {
-      --tw-prose-body: #d4d4d8;
-      --tw-prose-headings: #f4f4f5;
-      --tw-prose-links: #60a5fa;
-      --tw-prose-bold: #f4f4f5;
-      --tw-prose-counters: #a1a1aa;
-      --tw-prose-bullets: #52525b;
-      --tw-prose-quotes: #d4d4d8;
-      --tw-prose-quote-borders: #3f3f46;
-      --tw-prose-code: #f4f4f5;
+    /* Prose tweaks for our dark theme.
+       Selector intentionally uses .prose.prose-rb (not bare .prose-rb) to
+       beat Tailwind's .prose defaults on specificity — without this, the CDN
+       stylesheet (which is injected late) wins the cascade tiebreak and prose
+       text renders at ~#374151 on a dark background. */
+    .prose.prose-rb {
+      --tw-prose-body: #e4e4e7;
+      --tw-prose-headings: #fafafa;
+      --tw-prose-links: #93c5fd;
+      --tw-prose-bold: #fafafa;
+      --tw-prose-counters: #d4d4d8;
+      --tw-prose-bullets: #71717a;
+      --tw-prose-quotes: #e4e4e7;
+      --tw-prose-quote-borders: #52525b;
+      --tw-prose-code: #fafafa;
       --tw-prose-pre-bg: #18181b;
       --tw-prose-th-borders: #3f3f46;
       --tw-prose-td-borders: #27272a;
     }
-    .prose-rb code:not(pre code) {
+    .prose.prose-rb code:not(pre code) {
       background: rgba(63, 63, 70, 0.5);
       padding: 0.1em 0.35em;
       border-radius: 0.25rem;
       font-size: 0.875em;
     }
-    .prose-rb code:not(pre code)::before,
-    .prose-rb code:not(pre code)::after { content: none; }
-    .prose-rb pre {
+    .prose.prose-rb code:not(pre code)::before,
+    .prose.prose-rb code:not(pre code)::after { content: none; }
+    .prose.prose-rb pre {
       border: 1px solid #27272a;
       border-radius: 0.5rem;
     }
@@ -462,7 +466,7 @@
               <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Suggested fix</div>
               <div class="prose prose-rb max-w-none text-sm">${md(f.fix_md || f.fix)}</div>
             </div>` : ""}
-            ${f.verification ? `<div class="text-xs text-zinc-500"><span class="uppercase tracking-wider">Verification:</span> ${escapeHtml(f.verification)}</div>` : ""}
+            ${f.verification ? `<div class="text-xs text-zinc-300"><span class="uppercase tracking-wider text-zinc-500">Verification:</span> ${escapeHtml(f.verification)}</div>` : ""}
           </div>
         </details>`;
       }).join("");
