@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-zinc-950 text-zinc-100">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>reviewbot — code review report</title>
+  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <script>
+    // Tailwind config — dark by default, custom palette tweaks.
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            sev: {
+              critical: '#ef4444',
+              high:     '#f97316',
+              medium:   '#eab308',
+              low:      '#3b82f6',
+              info:     '#71717a',
+            },
+          },
+        },
+      },
+    };
+  </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <style>
+    html { color-scheme: dark; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+
+    /* ── Personality themes ─────────────────────────────────────
+       Each personality class shifts the dominant accent + a few
+       background hues. Findings + severity colors are unchanged
+       so the report stays scannable. */
+    body.persona-sexy   { background: linear-gradient(180deg, #1a0a18 0%, #0a0a0a 30%) fixed; }
+    body.persona-sexy   .accent-bg { background-color: #831843; }
+    body.persona-sexy   .accent-text { color: #f9a8d4; }
+    body.persona-sexy   .accent-border { border-color: #be185d; }
+    body.persona-sexy   header { background-color: rgba(76, 5, 25, 0.6) !important; }
+
+    body.persona-angry  { background: linear-gradient(180deg, #1a0808 0%, #0a0a0a 30%) fixed; }
+    body.persona-angry  .accent-bg { background-color: #7f1d1d; }
+    body.persona-angry  .accent-text { color: #fca5a5; }
+    body.persona-angry  .accent-border { border-color: #b91c1c; }
+    body.persona-angry  header { background-color: rgba(60, 10, 10, 0.7) !important; }
+    body.persona-angry  { font-family: "Courier New", ui-monospace, monospace; }
+
+    body.persona-sarcastic { background: #0a0a0a fixed; }
+    body.persona-sarcastic .accent-bg { background-color: #3f3f46; }
+    body.persona-sarcastic .accent-text { color: #d4d4d8; }
+    body.persona-sarcastic .accent-border { border-color: #52525b; }
+
+    body.persona-butler { background: linear-gradient(180deg, #1a1408 0%, #0a0a0a 30%) fixed; }
+    body.persona-butler .accent-bg { background-color: #78350f; }
+    body.persona-butler .accent-text { color: #fcd34d; }
+    body.persona-butler .accent-border { border-color: #b45309; }
+    body.persona-butler header { background-color: rgba(40, 28, 8, 0.7) !important; }
+    body.persona-butler { font-family: Georgia, "Times New Roman", ui-serif, serif; }
+    body.persona-butler .prose-rb { font-family: Georgia, "Times New Roman", ui-serif, serif; }
+    body.persona-butler pre, body.persona-butler code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    /* Prose tweaks for our dark theme */
+    .prose-rb {
+      --tw-prose-body: #d4d4d8;
+      --tw-prose-headings: #f4f4f5;
+      --tw-prose-links: #60a5fa;
+      --tw-prose-bold: #f4f4f5;
+      --tw-prose-counters: #a1a1aa;
+      --tw-prose-bullets: #52525b;
+      --tw-prose-quotes: #d4d4d8;
+      --tw-prose-quote-borders: #3f3f46;
+      --tw-prose-code: #f4f4f5;
+      --tw-prose-pre-bg: #18181b;
+      --tw-prose-th-borders: #3f3f46;
+      --tw-prose-td-borders: #27272a;
+    }
+    .prose-rb code:not(pre code) {
+      background: rgba(63, 63, 70, 0.5);
+      padding: 0.1em 0.35em;
+      border-radius: 0.25rem;
+      font-size: 0.875em;
+    }
+    .prose-rb code:not(pre code)::before,
+    .prose-rb code:not(pre code)::after { content: none; }
+    .prose-rb pre {
+      border: 1px solid #27272a;
+      border-radius: 0.5rem;
+    }
+    /* Pulse for in-progress agents */
+    @keyframes softPulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+    .pulse { animation: softPulse 1.4s ease-in-out infinite; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- ─── Top bar ────────────────────────────────────────────────────── -->
+<header class="border-b border-zinc-800 bg-zinc-950/80 backdrop-blur sticky top-0 z-30">
+  <div class="max-w-6xl mx-auto px-6 py-3 flex items-center gap-4">
+    <div class="flex items-center gap-2">
+      <span class="text-2xl">🤖</span>
+      <span class="font-semibold tracking-tight">reviewbot</span>
+    </div>
+    <div id="phase-badge" class="text-xs px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-300">…</div>
+    <div id="persona-badge" class="hidden text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full accent-bg accent-text font-semibold"></div>
+    <div id="rendered-pill" class="text-[10px] text-zinc-500 font-mono" title="Last full re-render of this page"></div>
+    <div class="flex-1"></div>
+    <div id="cost-pill" class="text-xs px-3 py-1 rounded-full bg-zinc-800 text-zinc-300 font-mono"></div>
+    <button id="expand-all" class="text-xs px-2 py-1 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800">expand all</button>
+    <button id="collapse-all" class="text-xs px-2 py-1 rounded border border-zinc-700 text-zinc-300 hover:bg-zinc-800">collapse all</button>
+  </div>
+  <!-- Live progress bar -->
+  <div class="h-0.5 bg-zinc-900">
+    <div id="progress-bar" class="h-full bg-blue-500 accent-bg transition-all" style="width:0%"></div>
+  </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-6 py-8 space-y-10">
+
+  <!-- ─── Hero / branch info ──────────────────────────────────────── -->
+  <section>
+    <div class="flex items-center gap-3 mb-2">
+      <span id="risk-badge" class="text-sm font-semibold px-3 py-1 rounded-full bg-zinc-800">…</span>
+      <h1 class="text-2xl font-semibold tracking-tight">
+        <span id="branch-name" class="font-mono">—</span>
+        <span class="text-zinc-500 font-normal text-base mx-2">vs</span>
+        <span id="parent-name" class="font-mono text-zinc-300">—</span>
+      </h1>
+    </div>
+    <p id="diff-stats" class="text-sm text-zinc-400 font-mono"></p>
+  </section>
+
+  <!-- ─── Severity summary cards ──────────────────────────────────── -->
+  <section class="grid grid-cols-2 sm:grid-cols-5 gap-3" id="sev-cards"></section>
+
+  <!-- ─── Agent grid (live progress) ─────────────────────────────── -->
+  <section>
+    <h2 class="text-sm uppercase tracking-wider text-zinc-500 mb-3">Reviewers</h2>
+    <div id="agent-grid" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2"></div>
+  </section>
+
+  <!-- ─── Executive summary ──────────────────────────────────────── -->
+  <section>
+    <h2 class="text-sm uppercase tracking-wider text-zinc-500 mb-3">Executive summary</h2>
+    <div id="summary-block" class="rounded-xl border border-zinc-800 bg-zinc-900/40 p-6">
+      <div class="text-zinc-500 italic" id="summary-pending">Waiting for the consolidator…</div>
+      <article id="summary-md" class="prose prose-rb max-w-none hidden"></article>
+      <div id="headline-concerns" class="mt-6 space-y-2"></div>
+    </div>
+  </section>
+
+  <!-- ─── Findings ────────────────────────────────────────────────── -->
+  <section>
+    <div class="flex items-center justify-between mb-3">
+      <h2 class="text-sm uppercase tracking-wider text-zinc-500">Findings</h2>
+      <div class="flex items-center gap-2">
+        <input id="filter-text" type="search" placeholder="filter findings…"
+               class="text-xs bg-zinc-900 border border-zinc-800 rounded px-2 py-1 w-48"/>
+        <select id="filter-sev" class="text-xs bg-zinc-900 border border-zinc-800 rounded px-2 py-1">
+          <option value="">all severities</option>
+          <option value="critical">critical+</option>
+          <option value="high">high+</option>
+          <option value="medium">medium+</option>
+          <option value="low">low+</option>
+          <option value="info">info</option>
+        </select>
+      </div>
+    </div>
+    <div id="findings" class="space-y-3"></div>
+  </section>
+
+  <!-- ─── Per-agent reports (shows even agents with 0 findings) ── -->
+  <section>
+    <h2 class="text-sm uppercase tracking-wider text-zinc-500 mb-3">Agent reports</h2>
+    <div id="agent-reports" class="space-y-2"></div>
+  </section>
+
+  <!-- ─── Spot-test plan ─────────────────────────────────────────── -->
+  <section>
+    <h2 class="text-sm uppercase tracking-wider text-zinc-500 mb-3">Spot-test plan</h2>
+    <div id="spot-test-plan" class="rounded-xl border border-zinc-800 bg-zinc-900/40 p-6">
+      <div class="text-zinc-500 italic">Waiting for the spot-test-plan agent…</div>
+    </div>
+  </section>
+
+  <!-- ─── Cost breakdown ─────────────────────────────────────────── -->
+  <section>
+    <h2 class="text-sm uppercase tracking-wider text-zinc-500 mb-3">Cost</h2>
+    <div id="cost-block" class="rounded-xl border border-zinc-800 bg-zinc-900/40 p-6"></div>
+  </section>
+
+  <footer class="text-center text-xs text-zinc-600 pt-8 pb-12">
+    Generated by <a class="text-zinc-400 hover:text-zinc-200" href="https://github.com/jclement/reviewbot">reviewbot</a> ·
+    page auto-refreshes when new findings arrive
+  </footer>
+</main>
+
+<script id="payload" type="application/json">/*__REVIEWBOT_PAYLOAD__*/</script>
+<script>
+  // ── Live reload (lightweight) ────────────────────────────────────
+  // We DON'T replace the body or re-run any scripts. We just refetch
+  // the payload JSON, swap it into the inline <script id="payload">
+  // tag, and call render() — which is idempotent. This avoids all the
+  // brittle bits of full-page reloading (duplicated EventSources,
+  // accumulating setIntervals, transient blank states, race conditions
+  // between DOM replacement and the next render).
+  //
+  // Two trigger channels:
+  //   1. SSE on /events — instant refresh on file change.
+  //   2. Polling /payload.json every 3s — backstop if SSE breaks.
+  (function () {
+    let lastEpoch = 0;
+    try {
+      const p = JSON.parse(document.getElementById("payload").textContent);
+      lastEpoch = +p.rendered_epoch || 0;
+    } catch (e) {}
+
+    let refreshing = false;
+    function refresh() {
+      if (refreshing) return;
+      refreshing = true;
+      return fetch("/payload.json?t=" + Date.now(), {cache: "no-store"})
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (!data) return;
+          const epoch = +data.rendered_epoch || 0;
+          if (epoch <= lastEpoch) return;
+          lastEpoch = epoch;
+          // Update the inline payload tag in-place; render() reads from it.
+          document.getElementById("payload").textContent =
+            JSON.stringify(data).replace(/<\//g, "<\\/");
+          if (window.__rbRender) window.__rbRender();
+        })
+        .catch(() => {})
+        .finally(() => { refreshing = false; });
+    }
+
+    if (typeof EventSource !== "undefined") {
+      try {
+        const es = new EventSource("/events");
+        es.addEventListener("reload", () => refresh());
+      } catch (e) { /* fine, polling backstops */ }
+    }
+    setInterval(refresh, 3000);
+  })();
+
+  // ── Render the page from the embedded payload ─────────────────────
+  function fmt(n)  { return new Intl.NumberFormat().format(n); }
+  function fmt$(n) { return "$" + (n || 0).toFixed(4); }
+  function escapeHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+      .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+  }
+  function md(s) {
+    if (!s) return "";
+    try { return marked.parse(s, {gfm:true, breaks:true}); }
+    catch(e) { return "<pre>"+escapeHtml(s)+"</pre>"; }
+  }
+  function langOf(file, hint) {
+    if (hint) return hint;
+    if (!file) return "plaintext";
+    const ext = (file.split(".").pop() || "").toLowerCase();
+    const map = {go:"go", py:"python", rb:"ruby", js:"javascript", jsx:"javascript",
+      ts:"typescript", tsx:"typescript", java:"java", kt:"kotlin", swift:"swift",
+      rs:"rust", c:"c", h:"c", cpp:"cpp", cc:"cpp", hpp:"cpp", cs:"csharp",
+      php:"php", sh:"bash", bash:"bash", zsh:"bash", yml:"yaml", yaml:"yaml",
+      json:"json", toml:"toml", html:"html", css:"css", scss:"scss",
+      sql:"sql", dockerfile:"dockerfile", md:"markdown", proto:"protobuf"};
+    return map[ext] || "plaintext";
+  }
+  function sevColor(s) {
+    return ({critical:"bg-sev-critical/15 text-sev-critical border-sev-critical/40",
+             high:"bg-sev-high/15 text-sev-high border-sev-high/40",
+             medium:"bg-sev-medium/15 text-sev-medium border-sev-medium/40",
+             low:"bg-sev-low/15 text-sev-low border-sev-low/40",
+             info:"bg-sev-info/15 text-sev-info border-sev-info/40"})[s||"info"];
+  }
+  function riskColor(r) {
+    return ({critical:"bg-red-500/20 text-red-300 border border-red-500/40",
+             high:"bg-orange-500/20 text-orange-300 border border-orange-500/40",
+             medium:"bg-yellow-500/20 text-yellow-300 border border-yellow-500/40",
+             low:"bg-green-500/20 text-green-300 border border-green-500/40"})[r||"low"];
+  }
+  function statusDot(st) {
+    if (st === "done") return '<span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>';
+    if (st === "failed") return '<span class="inline-block w-2 h-2 rounded-full bg-red-500"></span>';
+    if (st === "running") return '<span class="inline-block w-2 h-2 rounded-full bg-blue-500 pulse"></span>';
+    return '<span class="inline-block w-2 h-2 rounded-full bg-zinc-700"></span>';
+  }
+  function sevRank(s) { return ({critical:0,high:1,medium:2,low:3,info:4}[s] ?? 5); }
+
+  function render() {
+    let payload;
+    try { payload = JSON.parse(document.getElementById("payload").textContent); }
+    catch (e) { console.error(e); return; }
+
+    // Header
+    document.getElementById("branch-name").textContent = payload.branch || "?";
+    document.getElementById("parent-name").textContent = payload.parent || "?";
+    const ds = payload.diff_stats || {};
+    document.getElementById("diff-stats").textContent =
+      `${fmt(ds.files_changed||0)} files · +${fmt(ds.insertions||0)} / -${fmt(ds.deletions||0)} · base ${(payload.merge_base||'').slice(0,12)}`;
+
+    const phaseBadge = document.getElementById("phase-badge");
+    const phaseLabel = {starting:"warming up", "in-progress":"reviewing…", complete:"complete"}[payload.phase] || payload.phase;
+    phaseBadge.textContent = phaseLabel;
+    phaseBadge.className = "text-xs px-2 py-0.5 rounded-full " +
+      (payload.phase === "complete" ? "bg-green-900/40 text-green-300" : "bg-blue-900/40 text-blue-300 pulse");
+
+    const renderedPill = document.getElementById("rendered-pill");
+    if (renderedPill) {
+      renderedPill.textContent = payload.rendered_at ? `last update ${payload.rendered_at}` : "";
+    }
+
+    // Personality theming. Strip any old persona-* class first.
+    document.body.classList.forEach(cls => {
+      if (cls.startsWith("persona-")) document.body.classList.remove(cls);
+    });
+    const persona = (payload.personality || "").toLowerCase();
+    const personaBadge = document.getElementById("persona-badge");
+    if (persona) {
+      document.body.classList.add("persona-" + persona);
+      const emoji = {sexy:"💕", angry:"🔥", sarcastic:"🙃", butler:"🎩"}[persona] || "✨";
+      personaBadge.textContent = `${emoji} ${persona}`;
+      personaBadge.classList.remove("hidden");
+    } else {
+      personaBadge.classList.add("hidden");
+    }
+
+    const pct = payload.agents_total ? (100 * payload.agents_done / payload.agents_total) : 0;
+    document.getElementById("progress-bar").style.width = pct.toFixed(1) + "%";
+
+    // Risk
+    const rb = document.getElementById("risk-badge");
+    rb.textContent = "RISK: " + (payload.risk || "—").toUpperCase();
+    rb.className = "text-sm font-semibold px-3 py-1 rounded-full " + riskColor(payload.risk);
+
+    // Cost pill
+    const c = payload.cost || {};
+    const totalTokens = (c.input_tokens||0)+(c.output_tokens||0)+(c.cache_read_tokens||0)+(c.cache_write_tokens||0);
+    document.getElementById("cost-pill").textContent =
+      `${fmt$(c.total_usd)} · ${fmt(totalTokens)} tokens`;
+
+    // Severity cards
+    const sev = payload.severity_counts || {};
+    document.getElementById("sev-cards").innerHTML =
+      ["critical","high","medium","low","info"].map(s => {
+        const n = sev[s]||0;
+        return `<button data-sev="${s}" class="sev-card text-left rounded-lg border ${sevColor(s)} px-4 py-3 hover:brightness-125 transition">
+          <div class="text-2xl font-semibold">${n}</div>
+          <div class="text-xs uppercase tracking-wider opacity-80">${s}</div>
+        </button>`;
+      }).join("");
+
+    // Agent grid
+    const status = payload.agent_status || {};
+    const order = ["supply-chain","security","subtle-bugs","performance","concurrency",
+      "error-handling","tests","api-contract","code-quality","architecture",
+      "observability","db-migrations","frontend","ui-ux","docs","configuration",
+      "repo-hygiene","spot-test-plan","consolidator"];
+    const costByAgent = {};
+    (c.by_agent || []).forEach(a => costByAgent[a.agent] = a);
+    // Per-agent lookups so we can show finding count + summary in the grid.
+    const agentByID = {};
+    (payload.agents || []).forEach(a => agentByID[a.agent] = a);
+    document.getElementById("agent-grid").innerHTML =
+      order.map(a => {
+        const st = status[a] || "pending";
+        const ag = costByAgent[a] || {};
+        const data = agentByID[a] || {};
+        const nFindings = (data.findings || []).length;
+        const parseErr = !!(data._parser_error || data._no_json_parse || data._raw_truncated);
+        const tooltip = (data.summary || "").slice(0, 200).replace(/"/g, "&quot;");
+        const countBadge = st === "done" ? `<span class="text-[10px] px-1.5 py-0.5 rounded ${nFindings ? 'bg-amber-900/40 text-amber-300' : 'bg-zinc-800 text-zinc-500'} font-mono">${nFindings}</span>` : "";
+        const errBadge = parseErr ? '<span class="text-[10px] px-1 py-0.5 rounded bg-red-900/40 text-red-300" title="parse error — see raw output">⚠</span>' : "";
+        return `<div title="${tooltip}" class="rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2 flex items-center gap-2">
+          ${statusDot(st)}
+          <div class="flex-1 min-w-0">
+            <div class="text-xs font-mono truncate">${a}</div>
+            <div class="text-[10px] text-zinc-500 font-mono">${ag.cost_usd ? fmt$(ag.cost_usd) : ""}</div>
+          </div>
+          ${countBadge}${errBadge}
+        </div>`;
+      }).join("");
+
+    // Executive summary
+    const cons = payload.consolidated;
+    const sumPending = document.getElementById("summary-pending");
+    const sumMd = document.getElementById("summary-md");
+    const headline = document.getElementById("headline-concerns");
+    if (cons && cons.summary_md) {
+      sumPending.classList.add("hidden");
+      sumMd.classList.remove("hidden");
+      sumMd.innerHTML = md(cons.summary_md);
+      headline.innerHTML = (cons.headline_concerns||[]).map(h => `
+        <div class="flex items-start gap-3 p-3 rounded border border-zinc-800 bg-zinc-900/30">
+          <span class="text-xs px-2 py-0.5 rounded ${sevColor(h.severity)} border uppercase tracking-wider font-semibold mt-0.5">${h.severity}</span>
+          <div class="flex-1 min-w-0">
+            <div class="font-medium">${escapeHtml(h.title)}</div>
+            <div class="text-sm text-zinc-400 mt-0.5">${escapeHtml(h.why_it_matters)}</div>
+          </div>
+        </div>`).join("");
+    } else {
+      sumPending.classList.remove("hidden");
+      sumMd.classList.add("hidden");
+      headline.innerHTML = "";
+    }
+
+    // Findings
+    let findings = [];
+    if (cons && Array.isArray(cons.findings)) {
+      findings = cons.findings.slice();
+    } else {
+      // Pre-consolidation: stitch from individual agents.
+      (payload.agents || []).forEach(a => {
+        if (a.agent === "consolidator" || a.agent === "spot-test-plan") return;
+        (a.findings || []).forEach(f => {
+          findings.push({...f, agents: [a.agent]});
+        });
+      });
+    }
+    findings.sort((x,y) => sevRank(x.severity) - sevRank(y.severity));
+
+    const findingsHost = document.getElementById("findings");
+    if (!findings.length) {
+      findingsHost.innerHTML = `<div class="text-zinc-500 italic p-6 rounded-xl border border-zinc-800 bg-zinc-900/40">No findings yet.</div>`;
+    } else {
+      findingsHost.innerHTML = findings.map((f, i) => {
+        const sev = (f.severity||"info").toLowerCase();
+        const lang = langOf(f.file, f.language);
+        const id = "f" + i;
+        const fileLine = f.file ? `${escapeHtml(f.file)}${f.line ? ":"+f.line : ""}` : "";
+        const agentTags = (f.agents||[]).map(a =>
+          `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">${escapeHtml(a)}</span>`
+        ).join(" ");
+        const tagBits = (f.tags||[]).map(t =>
+          `<span class="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-500">${escapeHtml(t)}</span>`
+        ).join(" ");
+        return `
+        <details data-sev="${sev}" data-text="${escapeHtml(((f.title||"")+" "+(f.explanation_md||f.explanation||"")+" "+(fileLine)).toLowerCase())}"
+                 class="finding rounded-lg border ${sevColor(sev)} bg-zinc-900/30 group" ${sevRank(sev) <= 1 ? "open" : ""}>
+          <summary class="cursor-pointer select-none px-4 py-3 flex items-center gap-3">
+            <span class="text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded border ${sevColor(sev)}">${sev}</span>
+            <span class="font-medium flex-1 min-w-0 truncate">${escapeHtml(f.title||"untitled")}</span>
+            <span class="text-xs text-zinc-500 font-mono truncate hidden sm:inline">${fileLine}</span>
+            <span class="text-xs text-zinc-600">▾</span>
+          </summary>
+          <div class="px-5 pb-5 pt-1 space-y-4">
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              ${agentTags} ${tagBits}
+              ${f.confidence ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">confidence: ${escapeHtml(f.confidence)}</span>` : ""}
+              ${fileLine ? `<span class="ml-auto font-mono text-zinc-500 sm:hidden">${fileLine}</span>` : ""}
+            </div>
+            ${f.snippet ? `<pre class="rounded-lg overflow-x-auto"><code class="language-${lang}">${escapeHtml(f.snippet)}</code></pre>` : ""}
+            <div>
+              <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Why it matters</div>
+              <div class="prose prose-rb max-w-none text-sm">${md(f.explanation_md || f.explanation || "")}</div>
+            </div>
+            ${(f.fix_md || f.fix) ? `<div>
+              <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Suggested fix</div>
+              <div class="prose prose-rb max-w-none text-sm">${md(f.fix_md || f.fix)}</div>
+            </div>` : ""}
+            ${f.verification ? `<div class="text-xs text-zinc-500"><span class="uppercase tracking-wider">Verification:</span> ${escapeHtml(f.verification)}</div>` : ""}
+          </div>
+        </details>`;
+      }).join("");
+      // Apply highlight.js on the new code blocks.
+      findingsHost.querySelectorAll("pre code").forEach(b => { try { hljs.highlightElement(b); } catch(e){} });
+    }
+
+    // Per-agent reports — shows the summary for every agent that ran,
+    // including ones that found nothing (so you can see "checked, clean"
+    // vs "never reported"). Parse errors are highlighted.
+    const reportsHost = document.getElementById("agent-reports");
+    const reportableAgents = (payload.agents || [])
+      .filter(a => a.agent !== "consolidator")
+      .sort((x, y) => (x.agent || "").localeCompare(y.agent || ""));
+    if (!reportableAgents.length) {
+      reportsHost.innerHTML = '<div class="text-zinc-500 italic p-4 rounded-xl border border-zinc-800 bg-zinc-900/40">No agent output yet.</div>';
+    } else {
+      reportsHost.innerHTML = reportableAgents.map(a => {
+        const n = (a.findings || []).length;
+        const parseErr = !!(a._parser_error || a._no_json_parse || a._raw_truncated);
+        const meta = a._meta || {};
+        const badge = parseErr
+          ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-red-900/40 text-red-300 uppercase">parse error</span>'
+          : (n
+            ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/40 text-amber-300">${n} findings</span>`
+            : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-green-900/30 text-green-400">clean</span>');
+        const cost = meta.cost_usd ? `<span class="text-[10px] text-zinc-600 font-mono">${fmt$(meta.cost_usd)}</span>` : "";
+        return `<details class="rounded border border-zinc-800 bg-zinc-900/30">
+          <summary class="cursor-pointer select-none px-4 py-2 flex items-center gap-3">
+            <span class="font-mono text-sm">${escapeHtml(a.agent)}</span>
+            ${badge} ${cost}
+            <span class="flex-1 min-w-0 truncate text-sm text-zinc-400">${escapeHtml(a.summary || "")}</span>
+            <span class="text-xs text-zinc-600">▾</span>
+          </summary>
+          <div class="px-5 pb-4 pt-1 text-sm space-y-2">
+            <div class="prose prose-rb max-w-none">${md(a.summary || "_(no summary)_")}</div>
+            ${parseErr ? `<div class="text-xs"><a class="text-blue-400 hover:underline" href="raw/${escapeHtml(a.agent)}.log" target="_blank">→ raw claude output (raw/${escapeHtml(a.agent)}.log)</a></div>` : ""}
+          </div>
+        </details>`;
+      }).join("");
+    }
+
+    // Spot test plan
+    const stp = payload.spot_test_plan;
+    const stpHost = document.getElementById("spot-test-plan");
+    if (stp && Array.isArray(stp.tests) && stp.tests.length) {
+      const tests = stp.tests.slice().sort((a,b) => (a.priority||"P9").localeCompare(b.priority||"P9"));
+      stpHost.innerHTML = `
+        <div class="prose prose-rb max-w-none mb-4">${md(stp.summary || "")}</div>
+        <div class="text-xs text-zinc-500 mb-4">Estimated total: <span class="font-mono">${fmt(stp.estimated_minutes||0)} min</span></div>
+        <ol class="space-y-2">
+          ${tests.map((t,i) => {
+            const pri = t.priority || "P2";
+            const priClass = pri==="P0" ? "bg-red-500/15 text-red-300 border-red-500/40"
+                          : pri==="P1" ? "bg-yellow-500/15 text-yellow-300 border-yellow-500/40"
+                          : "bg-zinc-700/30 text-zinc-300 border-zinc-700";
+            // Render free-text fields through markdown so embedded code
+            // fences get syntax-highlighted and lists/paragraphs lay out
+            // properly. Agents may put either short prose or multi-line
+            // shell snippets in `setup` etc. — md() handles both.
+            return `<details class="rounded border border-zinc-800 bg-zinc-900/30">
+              <summary class="cursor-pointer select-none px-4 py-2 flex items-center gap-3">
+                <span class="text-xs font-semibold uppercase px-2 py-0.5 rounded border ${priClass}">${pri}</span>
+                <span class="flex-1 min-w-0 truncate">${escapeHtml(t.title||"")}</span>
+                <span class="text-xs text-zinc-500 font-mono">${fmt(t.estimated_minutes||0)}m</span>
+              </summary>
+              <div class="px-5 pb-4 pt-1 text-sm space-y-4">
+                ${t.rationale ? `<div class="text-zinc-400 italic prose prose-rb max-w-none">${md(t.rationale)}</div>` : ""}
+                ${t.setup ? `<div><div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Setup</div><div class="prose prose-rb max-w-none">${md(t.setup)}</div></div>` : ""}
+                ${(t.steps && t.steps.length) ? `<div><div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Steps</div><ol class="list-decimal list-outside ml-5 space-y-1">${t.steps.map(s => `<li class="prose prose-rb max-w-none [&>p]:my-0">${md(s)}</li>`).join("")}</ol></div>` : ""}
+                ${t.expected ? `<div><div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Expected</div><div class="prose prose-rb max-w-none">${md(t.expected)}</div></div>` : ""}
+                ${t.watch_for ? `<div><div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Watch for</div><div class="prose prose-rb max-w-none">${md(t.watch_for)}</div></div>` : ""}
+              </div>
+            </details>`;
+          }).join("")}
+        </ol>`;
+      stpHost.querySelectorAll("pre code").forEach(b => { try { hljs.highlightElement(b); } catch(e){} });
+    }
+
+    // Cost block
+    const cb = document.getElementById("cost-block");
+    cb.innerHTML = `
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
+        <div><div class="text-xs uppercase text-zinc-500">Total</div><div class="text-2xl font-mono">${fmt$(c.total_usd)}</div></div>
+        <div><div class="text-xs uppercase text-zinc-500">Input tokens</div><div class="text-lg font-mono">${fmt(c.input_tokens||0)}</div></div>
+        <div><div class="text-xs uppercase text-zinc-500">Output tokens</div><div class="text-lg font-mono">${fmt(c.output_tokens||0)}</div></div>
+        <div><div class="text-xs uppercase text-zinc-500">Cache read</div><div class="text-lg font-mono">${fmt(c.cache_read_tokens||0)}</div></div>
+      </div>
+      <table class="w-full text-sm font-mono">
+        <thead class="text-zinc-500 text-xs uppercase">
+          <tr><th class="text-left py-1">agent</th><th class="text-right">in</th><th class="text-right">out</th><th class="text-right">cache r</th><th class="text-right">cache w</th><th class="text-right">$</th></tr>
+        </thead>
+        <tbody>
+          ${(c.by_agent||[]).map(a => `
+            <tr class="border-t border-zinc-800/60">
+              <td class="py-1">${escapeHtml(a.agent)}</td>
+              <td class="text-right">${fmt(a.input_tokens||0)}</td>
+              <td class="text-right">${fmt(a.output_tokens||0)}</td>
+              <td class="text-right text-zinc-500">${fmt(a.cache_read_tokens||0)}</td>
+              <td class="text-right text-zinc-500">${fmt(a.cache_write_tokens||0)}</td>
+              <td class="text-right">${fmt$(a.cost_usd||0)}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>`;
+
+    // Filter wiring
+    function applyFilter() {
+      const q = document.getElementById("filter-text").value.toLowerCase();
+      const minSev = document.getElementById("filter-sev").value;
+      const minRank = minSev ? sevRank(minSev) : 99;
+      document.querySelectorAll(".finding").forEach(el => {
+        const sev = el.dataset.sev;
+        const text = el.dataset.text || "";
+        const okSev = !minSev || sevRank(sev) <= minRank || sev === minSev;
+        const okText = !q || text.includes(q);
+        el.style.display = (okSev && okText) ? "" : "none";
+      });
+    }
+    document.getElementById("filter-text").oninput = applyFilter;
+    document.getElementById("filter-sev").onchange = applyFilter;
+    document.getElementById("expand-all").onclick = () =>
+      document.querySelectorAll(".finding,#spot-test-plan details").forEach(d => d.open = true);
+    document.getElementById("collapse-all").onclick = () =>
+      document.querySelectorAll(".finding,#spot-test-plan details").forEach(d => d.open = false);
+
+    // Severity card click → set filter to that sev only.
+    document.querySelectorAll(".sev-card").forEach(c => c.onclick = () => {
+      document.getElementById("filter-sev").value = c.dataset.sev;
+      applyFilter();
+      document.getElementById("findings").scrollIntoView({behavior:"smooth", block:"start"});
+    });
+  }
+
+  window.__rbRender = render;
+  document.addEventListener("DOMContentLoaded", render);
+</script>
+</body>
+</html>

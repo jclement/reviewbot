@@ -1,0 +1,57 @@
+[tools]
+go = "1.25"
+goreleaser = "2.15.2"
+"go:honnef.co/go/tools/cmd/staticcheck" = "latest"
+
+[tasks.dev]
+description = "Build and run reviewbot --help"
+run = "go build -ldflags=\"-X main.version=dev\" -o ./bin/reviewbot ./cmd/reviewbot && ./bin/reviewbot --help"
+
+[tasks.test]
+description = "Run all tests"
+run = "go test -v ./..."
+
+[tasks.lint]
+description = "Run all linters"
+run = "go vet ./... && staticcheck ./..."
+
+[tasks.fmt]
+description = "Format code"
+run = "go fmt ./..."
+
+[tasks.build]
+description = "Production build"
+run = "CGO_ENABLED=0 go build -ldflags=\"-s -w -X main.version=dev\" -o bin/reviewbot ./cmd/reviewbot"
+
+[tasks.release]
+description = "Tag and push a release"
+run = """
+#!/bin/bash
+set -e
+current=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+echo "Current: $current"
+major=$(echo $current | sed 's/v//' | cut -d. -f1)
+minor=$(echo $current | cut -d. -f2)
+patch=$(echo $current | cut -d. -f3)
+echo "  1) patch → v${major}.${minor}.$((patch+1))"
+echo "  2) minor → v${major}.$((minor+1)).0"
+echo "  3) major → v$((major+1)).0.0"
+read -p "Choice [1]: " c; c=${c:-1}
+case $c in
+  1) v="v${major}.${minor}.$((patch+1))" ;;
+  2) v="v${major}.$((minor+1)).0" ;;
+  3) v="v$((major+1)).0.0" ;;
+  *) echo "Invalid"; exit 1 ;;
+esac
+git tag -a "$v" -m "Release $v"
+read -p "Push $v? [Y/n]: " p; p=${p:-Y}
+[[ $p =~ ^[Yy]$ ]] && git push origin "$v"
+"""
+
+[tasks."build:release"]
+description = "Test goreleaser build (all platforms, no publish)"
+run = "goreleaser release --snapshot --clean"
+
+[tasks.clean]
+description = "Blow away local dev state"
+run = "rm -rf bin/ dist/"

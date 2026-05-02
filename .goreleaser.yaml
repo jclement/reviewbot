@@ -1,0 +1,72 @@
+version: 2
+project_name: reviewbot
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - main: ./cmd/reviewbot
+    binary: reviewbot
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE*
+      - README*
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.bundle"
+    args:
+      - "sign-blob"
+      - "--yes"
+      - "--bundle=${signature}"
+      - "${artifact}"
+
+brews:
+  - repository:
+      owner: jclement
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/jclement/reviewbot"
+    description: "Agentic code review for the current branch"
+    license: "MIT"
+    install: |
+      bin.install "reviewbot"
+    test: |
+      system bin/"reviewbot", "--version"
+    dependencies:
+      - name: docker
+        type: optional
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ["^docs:", "^test:", "^ci:", "^chore:"]
+
+release:
+  prerelease: auto
+  footer: |
+    ## Install
+
+    ```bash
+    # macOS/Linux
+    brew install jclement/tap/reviewbot
+
+    # Or download from the assets below.
+    # Then run: reviewbot   (in any git checkout)
+    ```
