@@ -40,7 +40,15 @@ Then it generates a **self-contained HTML report** with collapsible sections,
 syntax-highlighted snippets, severity badges, a clickable filter, the
 spot-test plan, and a per-agent token-cost breakdown — and **opens it in your
 browser**. The page **live-reloads** as each agent completes (Server-Sent
-Events + a polling watcher on the report file).
+Events + polling watcher).
+
+The report supports two view modes (**by severity** / **by file**) and
+**triage**: each finding has 👁 / ✓ / 🚫 / ↺ buttons that persist via
+`localStorage` so re-runs of the same review remember what you've already
+reviewed, acked, or dismissed.
+
+A flat markdown summary (`summary.md`) is also written to the run directory —
+suitable for pasting into a PR comment via `gh pr comment -F summary.md`.
 
 When all agents finish, you're dropped into a `tmux` session with a Claude
 instance pre-loaded with the full review context, so you can ask:
@@ -94,6 +102,8 @@ reviewbot clean            Remove image, volume, and all containers
 | `--no-chat` | Skip the post-review tmux follow-up chat |
 | `--arch ARCH` | Container CPU arch (`amd64`, `arm64`); default = host |
 | `--personality MODE` | Tone for summaries + report theme: `sexy`, `angry`, `sarcastic`, or `butler` (findings stay neutral) |
+| `--staged` | Review staged (uncommitted) changes instead of branch diff |
+| `--since N` | Review the last N commits instead of branch diff |
 
 ## Parent-branch detection
 

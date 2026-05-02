@@ -7,16 +7,27 @@ package report
 import (
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
+
+// vendorFS embeds the third-party CSS / JS the HTML template needs:
+// Tailwind v3 (with typography plugin), highlight.js, marked, and the
+// github-dark highlight stylesheet. We host these ourselves so the
+// report works fully offline and isn't a blank page on flaky networks.
+//
+//go:embed vendor/*
+var vendorFS embed.FS
 
 // Server serves a directory and pushes SSE reload events when index.html
 // changes. It's a one-shot per review run; create with New, start with
@@ -67,6 +78,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/vendor/", s.handleVendor)
 	mux.HandleFunc("/", s.handleStatic)
 
 	s.srv = &http.Server{
@@ -159,6 +171,32 @@ func hasDotDot(p string) bool {
 	return p == ".." || len(p) >= 3 && (p[:3] == "../" || p[len(p)-3:] == "/..")
 }
 
+// handleVendor serves the embedded third-party assets (Tailwind, marked,
+// highlight.js, github-dark.css). They never change between binary
+// builds so we mark them immutable.
+func (s *Server) handleVendor(w http.ResponseWriter, r *http.Request) {
+	clean := strings.TrimPrefix(filepath.Clean("/"+r.URL.Path), "/vendor/")
+	if clean == "" || strings.Contains(clean, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := fs.ReadFile(vendorFS, "vendor/"+clean)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch {
+	case strings.HasSuffix(clean, ".js"):
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	case strings.HasSuffix(clean, ".css"):
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	default:
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Write(data)
+}
+
 // handleEvents is the SSE endpoint. The browser script subscribes here and
 // reloads on the "reload" event.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -210,11 +248,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 // ── Watcher ──────────────────────────────────────────────────────────────
 
-// watchLoop polls the index.html for content changes (hash). We use polling
-// instead of fsnotify to keep dependencies minimal and to work on every OS
-// without surprises with bind mounts. 500ms is plenty for human-perceived
-// liveness and not a CPU concern.
+// watchLoop polls payload.json for content changes (hash). payload.json
+// is the actual signal — small (~1-3 KB) and rewritten by the orchestrator
+// every render, vs index.html which is ~30 KB and embeds the same data.
+// Hashing the smaller file is cheaper. We fall back to index.html if
+// payload.json doesn't exist yet (e.g. very first render).
+//
+// Polling vs fsnotify: polling avoids a dependency and works uniformly
+// across host OSes and Docker bind-mount quirks.
 func (s *Server) watchLoop() {
+	payloadPath := filepath.Join(s.dir, "payload.json")
 	indexPath := filepath.Join(s.dir, "index.html")
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
@@ -223,9 +266,14 @@ func (s *Server) watchLoop() {
 		case <-s.stop:
 			return
 		case <-t.C:
-			data, err := os.ReadFile(indexPath)
+			data, err := os.ReadFile(payloadPath)
 			if err != nil {
-				continue
+				// payload.json hasn't appeared yet — fall back to index.html
+				// so the very first render still triggers SSE.
+				data, err = os.ReadFile(indexPath)
+				if err != nil {
+					continue
+				}
 			}
 			sum := sha256.Sum256(data)
 			h := hex.EncodeToString(sum[:8])

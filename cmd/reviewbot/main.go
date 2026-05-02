@@ -54,6 +54,8 @@ func main() {
 	rootCmd.Flags().Bool("no-browser", false, "don't open the browser automatically")
 	rootCmd.Flags().Bool("no-chat", false, "skip the post-review tmux follow-up chat")
 	rootCmd.Flags().String("personality", "", "tone for summaries + report theme: sexy | angry | sarcastic | butler")
+	rootCmd.Flags().Bool("staged", false, "review staged (uncommitted) changes instead of branch diff")
+	rootCmd.Flags().Int("since", 0, "review the last N commits instead of branch diff (mutually exclusive with --staged/--base)")
 
 	rootCmd.AddCommand(chatCmd(w))
 	rootCmd.AddCommand(listCmd(w))
@@ -116,6 +118,25 @@ func runReview(cmd *cobra.Command, args []string, w *ui.Writer) error {
 	default:
 		return fmt.Errorf("invalid --personality %q (choose: sexy, angry, sarcastic, butler, or omit)", personality)
 	}
+	staged, _ := cmd.Flags().GetBool("staged")
+	since, _ := cmd.Flags().GetInt("since")
+	// Validate the diff-source flags. They're mutually exclusive.
+	modeFlags := 0
+	if staged {
+		modeFlags++
+	}
+	if since > 0 {
+		modeFlags++
+	}
+	if cfg.BaseBranch != "" && (staged || since > 0) {
+		return fmt.Errorf("--base is mutually exclusive with --staged / --since")
+	}
+	if modeFlags > 1 {
+		return fmt.Errorf("--staged and --since are mutually exclusive")
+	}
+	if since < 0 {
+		return fmt.Errorf("--since must be a positive integer")
+	}
 
 	w.Banner()
 
@@ -123,9 +144,14 @@ func runReview(cmd *cobra.Command, args []string, w *ui.Writer) error {
 		return fmt.Errorf("docker is not available — install Docker Desktop or the Docker engine")
 	}
 	w.Info(fmt.Sprintf("Project: %s%s%s", ui.Bold, projectDir, ui.Reset))
-	if cfg.BaseBranch != "" {
+	switch {
+	case staged:
+		w.Info(fmt.Sprintf("Mode:    %sstaged changes%s (uncommitted, in the index)", ui.Cyan, ui.Reset))
+	case since > 0:
+		w.Info(fmt.Sprintf("Mode:    %slast %d commits%s", ui.Cyan, since, ui.Reset))
+	case cfg.BaseBranch != "":
 		w.Info(fmt.Sprintf("Base:    %s%s%s (override)", ui.Cyan, cfg.BaseBranch, ui.Reset))
-	} else {
+	default:
 		w.Info(fmt.Sprintf("Base:    %sauto-detect%s", ui.Dim, ui.Reset))
 	}
 
@@ -207,6 +233,8 @@ func runReview(cmd *cobra.Command, args []string, w *ui.Writer) error {
 		Arch:        arch,
 		BaseBranch:  cfg.BaseBranch,
 		Personality: personality,
+		Staged:      staged,
+		SinceN:      since,
 	})
 	if err != nil {
 		return err

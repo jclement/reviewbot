@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>reviewbot — code review report</title>
-  <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+  <!-- Vendored locally — see /vendor/. Works fully offline. -->
+  <script src="/vendor/tailwind.js"></script>
   <script>
     // Tailwind config — dark by default, custom palette tweaks.
     tailwind.config = {
@@ -24,9 +25,9 @@
       },
     };
   </script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="/vendor/highlight.js"></script>
+  <link rel="stylesheet" href="/vendor/highlight-github-dark.css">
+  <script src="/vendor/marked.js"></script>
   <style>
     html { color-scheme: dark; }
     body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -156,9 +157,13 @@
 
   <!-- ─── Findings ────────────────────────────────────────────────── -->
   <section>
-    <div class="flex items-center justify-between mb-3">
+    <div class="flex flex-wrap items-center justify-between mb-3 gap-2">
       <h2 class="text-sm uppercase tracking-wider text-zinc-500">Findings</h2>
       <div class="flex items-center gap-2">
+        <div id="view-toggle" class="flex rounded border border-zinc-800 overflow-hidden text-xs">
+          <button data-view="severity" class="px-2 py-1 bg-zinc-800 text-zinc-100">by severity</button>
+          <button data-view="file"     class="px-2 py-1 text-zinc-400 hover:bg-zinc-800">by file</button>
+        </div>
         <input id="filter-text" type="search" placeholder="filter findings…"
                class="text-xs bg-zinc-900 border border-zinc-800 rounded px-2 py-1 w-48"/>
         <select id="filter-sev" class="text-xs bg-zinc-900 border border-zinc-800 rounded px-2 py-1">
@@ -169,8 +174,14 @@
           <option value="low">low+</option>
           <option value="info">info</option>
         </select>
+        <label class="flex items-center gap-1 text-xs text-zinc-400">
+          <input id="show-dismissed" type="checkbox" class="accent-blue-500"/>
+          show dismissed
+        </label>
+        <button id="reset-triage" title="Clear all triage state for this report" class="text-[10px] px-2 py-1 rounded border border-zinc-700 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800">reset triage</button>
       </div>
     </div>
+    <div id="triage-summary" class="text-xs text-zinc-500 mb-2"></div>
     <div id="findings" class="space-y-3"></div>
   </section>
 
@@ -288,12 +299,61 @@
              low:"bg-green-500/20 text-green-300 border border-green-500/40"})[r||"low"];
   }
   function statusDot(st) {
-    if (st === "done") return '<span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>';
-    if (st === "failed") return '<span class="inline-block w-2 h-2 rounded-full bg-red-500"></span>';
+    if (st === "done")    return '<span class="inline-block w-2 h-2 rounded-full bg-green-500"></span>';
+    if (st === "failed")  return '<span class="inline-block w-2 h-2 rounded-full bg-red-500"></span>';
     if (st === "running") return '<span class="inline-block w-2 h-2 rounded-full bg-blue-500 pulse"></span>';
+    if (st === "skipped") return '<span class="inline-block w-2 h-2 rounded-full bg-zinc-600 opacity-40"></span>';
     return '<span class="inline-block w-2 h-2 rounded-full bg-zinc-700"></span>';
   }
   function sevRank(s) { return ({critical:0,high:1,medium:2,low:3,info:4}[s] ?? 5); }
+
+  // ── Triage state (localStorage) ──────────────────────────────────
+  // Key by content (title + file + line) so triage carries across
+  // re-runs of the same review. State is one of:
+  //   undefined  → open (default)
+  //   "seen"     → eyeball icon, slight fade
+  //   "acked"    → checkmark, faded
+  //   "dismissed"→ hidden by default (toggle to show)
+  const TRIAGE_KEY = "reviewbot.triage.v1";
+  function loadTriage() {
+    try { return JSON.parse(localStorage.getItem(TRIAGE_KEY) || "{}"); }
+    catch (e) { return {}; }
+  }
+  function saveTriage(t) {
+    try { localStorage.setItem(TRIAGE_KEY, JSON.stringify(t)); } catch (e) {}
+  }
+  function findingKey(f) {
+    // FNV-1a-ish quick hash of the stable bits.
+    const s = (f.title||"") + "|" + (f.file||"") + "|" + (f.line||"");
+    let h = 2166136261 >>> 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (h ^ s.charCodeAt(i)) >>> 0;
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    return h.toString(36);
+  }
+  let triage = loadTriage();
+  let viewMode = "severity"; // or "file"
+  let showDismissed = false;
+
+  // Group findings by file path (— for findings with no file).
+  function groupByFile(findings) {
+    const groups = new Map();
+    for (const f of findings) {
+      const key = f.file || "—";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(f);
+    }
+    // Sort each group's items by severity, then sort files by their worst severity.
+    for (const arr of groups.values()) {
+      arr.sort((a, b) => sevRank(a.severity) - sevRank(b.severity));
+    }
+    return [...groups.entries()].sort((a, b) => {
+      const ra = Math.min(...a[1].map(f => sevRank(f.severity)));
+      const rb = Math.min(...b[1].map(f => sevRank(f.severity)));
+      return ra - rb || a[0].localeCompare(b[0]);
+    });
+  }
 
   function render() {
     let payload;
@@ -376,10 +436,18 @@
         const data = agentByID[a] || {};
         const nFindings = (data.findings || []).length;
         const parseErr = !!(data._parser_error || data._no_json_parse || data._raw_truncated);
-        const tooltip = (data.summary || "").slice(0, 200).replace(/"/g, "&quot;");
-        const countBadge = st === "done" ? `<span class="text-[10px] px-1.5 py-0.5 rounded ${nFindings ? 'bg-amber-900/40 text-amber-300' : 'bg-zinc-800 text-zinc-500'} font-mono">${nFindings}</span>` : "";
+        const skipped  = st === "skipped";
+        const tooltip = skipped
+          ? "Skipped — file types this agent reviews aren't in the diff."
+          : (data.summary || "").slice(0, 200).replace(/"/g, "&quot;");
+        const countBadge = st === "done"
+          ? `<span class="text-[10px] px-1.5 py-0.5 rounded ${nFindings ? 'bg-amber-900/40 text-amber-300' : 'bg-zinc-800 text-zinc-500'} font-mono">${nFindings}</span>`
+          : skipped
+            ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-600 font-mono">skip</span>'
+            : "";
         const errBadge = parseErr ? '<span class="text-[10px] px-1 py-0.5 rounded bg-red-900/40 text-red-300" title="parse error — see raw output">⚠</span>' : "";
-        return `<div title="${tooltip}" class="rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2 flex items-center gap-2">
+        const opacityClass = skipped ? " opacity-50" : "";
+        return `<div title="${tooltip}" class="rounded border border-zinc-800 bg-zinc-900/40 px-3 py-2 flex items-center gap-2${opacityClass}">
           ${statusDot(st)}
           <div class="flex-1 min-w-0">
             <div class="text-xs font-mono truncate">${a}</div>
@@ -412,12 +480,11 @@
       headline.innerHTML = "";
     }
 
-    // Findings
+    // ── Findings (with triage + view modes) ──────────────────────────
     let findings = [];
     if (cons && Array.isArray(cons.findings)) {
       findings = cons.findings.slice();
     } else {
-      // Pre-consolidation: stitch from individual agents.
       (payload.agents || []).forEach(a => {
         if (a.agent === "consolidator" || a.agent === "spot-test-plan") return;
         (a.findings || []).forEach(f => {
@@ -427,51 +494,102 @@
     }
     findings.sort((x,y) => sevRank(x.severity) - sevRank(y.severity));
 
+    function renderFindingCard(f) {
+      const sev = (f.severity||"info").toLowerCase();
+      const lang = langOf(f.file, f.language);
+      const fileLine = f.file ? `${escapeHtml(f.file)}${f.line ? ":"+f.line : ""}` : "";
+      const agentTags = (f.agents||[]).map(a =>
+        `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">${escapeHtml(a)}</span>`
+      ).join(" ");
+      const tagBits = (f.tags||[]).map(t =>
+        `<span class="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-500">${escapeHtml(t)}</span>`
+      ).join(" ");
+      const key = findingKey(f);
+      const state = triage[key] || "";
+      // Triage badges shown next to the title.
+      const stateBadge = state === "seen"   ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-700 text-zinc-300" title="seen">👁</span>`
+                       : state === "acked"  ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-green-900/50 text-green-300" title="acknowledged">✓</span>`
+                       : state === "dismissed" ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500" title="dismissed">🚫</span>`
+                       : "";
+      const fadeClass = state ? " opacity-50 hover:opacity-100 transition-opacity" : "";
+      const text = ((f.title||"")+" "+(f.explanation_md||f.explanation||"")+" "+(fileLine)).toLowerCase();
+      return `
+      <details data-sev="${sev}" data-key="${key}" data-state="${state}"
+               data-file="${escapeHtml(f.file||'')}"
+               data-text="${escapeHtml(text)}"
+               class="finding rounded-lg border ${sevColor(sev)} bg-zinc-900/30 group${fadeClass}"
+               ${(sevRank(sev) <= 1 && !state) ? "open" : ""}>
+        <summary class="cursor-pointer select-none px-4 py-3 flex items-center gap-3">
+          <span class="text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded border ${sevColor(sev)}">${sev}</span>
+          <span class="font-medium flex-1 min-w-0 truncate">${escapeHtml(f.title||"untitled")}</span>
+          ${stateBadge}
+          <span class="text-xs text-zinc-500 font-mono truncate hidden sm:inline">${fileLine}</span>
+          <span class="text-xs text-zinc-600">▾</span>
+        </summary>
+        <div class="px-5 pb-5 pt-1 space-y-4">
+          <div class="flex flex-wrap items-center gap-2 text-xs">
+            ${agentTags} ${tagBits}
+            ${f.confidence ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">confidence: ${escapeHtml(f.confidence)}</span>` : ""}
+            <div class="ml-auto flex items-center gap-1 triage-buttons" data-key="${key}">
+              <button data-action="seen"     class="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 hover:bg-zinc-800" title="mark seen">👁</button>
+              <button data-action="acked"    class="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 hover:bg-zinc-800 text-green-400" title="acknowledge">✓</button>
+              <button data-action="dismissed" class="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 hover:bg-zinc-800 text-zinc-500" title="dismiss">🚫</button>
+              <button data-action="clear"    class="text-[10px] px-1.5 py-0.5 rounded border border-transparent hover:bg-zinc-800 text-zinc-500" title="reset state">↺</button>
+            </div>
+          </div>
+          ${f.snippet ? `<pre class="rounded-lg overflow-x-auto"><code class="language-${lang}">${escapeHtml(f.snippet)}</code></pre>` : ""}
+          <div>
+            <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Why it matters</div>
+            <div class="prose prose-rb max-w-none text-sm">${md(f.explanation_md || f.explanation || "")}</div>
+          </div>
+          ${(f.fix_md || f.fix) ? `<div>
+            <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Suggested fix</div>
+            <div class="prose prose-rb max-w-none text-sm">${md(f.fix_md || f.fix)}</div>
+          </div>` : ""}
+          ${f.verification ? `<div class="text-xs text-zinc-300"><span class="uppercase tracking-wider text-zinc-500">Verification:</span> ${escapeHtml(f.verification)}</div>` : ""}
+        </div>
+      </details>`;
+    }
+
     const findingsHost = document.getElementById("findings");
     if (!findings.length) {
       findingsHost.innerHTML = `<div class="text-zinc-500 italic p-6 rounded-xl border border-zinc-800 bg-zinc-900/40">No findings yet.</div>`;
-    } else {
-      findingsHost.innerHTML = findings.map((f, i) => {
-        const sev = (f.severity||"info").toLowerCase();
-        const lang = langOf(f.file, f.language);
-        const id = "f" + i;
-        const fileLine = f.file ? `${escapeHtml(f.file)}${f.line ? ":"+f.line : ""}` : "";
-        const agentTags = (f.agents||[]).map(a =>
-          `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono">${escapeHtml(a)}</span>`
-        ).join(" ");
-        const tagBits = (f.tags||[]).map(t =>
-          `<span class="text-[10px] px-1.5 py-0.5 rounded border border-zinc-700 text-zinc-500">${escapeHtml(t)}</span>`
-        ).join(" ");
-        return `
-        <details data-sev="${sev}" data-text="${escapeHtml(((f.title||"")+" "+(f.explanation_md||f.explanation||"")+" "+(fileLine)).toLowerCase())}"
-                 class="finding rounded-lg border ${sevColor(sev)} bg-zinc-900/30 group" ${sevRank(sev) <= 1 ? "open" : ""}>
-          <summary class="cursor-pointer select-none px-4 py-3 flex items-center gap-3">
-            <span class="text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded border ${sevColor(sev)}">${sev}</span>
-            <span class="font-medium flex-1 min-w-0 truncate">${escapeHtml(f.title||"untitled")}</span>
-            <span class="text-xs text-zinc-500 font-mono truncate hidden sm:inline">${fileLine}</span>
+    } else if (viewMode === "file") {
+      // Group by file. Each file is its own collapsible section with the
+      // findings underneath. Worst-severity-first inside the file.
+      findingsHost.innerHTML = groupByFile(findings).map(([file, items]) => {
+        const fileEsc = escapeHtml(file);
+        const worst = items.reduce((acc, f) => Math.min(acc, sevRank(f.severity)), 5);
+        const worstSev = ["critical","high","medium","low","info","none"][worst] || "info";
+        return `<details class="rounded-lg border ${sevColor(worstSev)} bg-zinc-900/20" open>
+          <summary class="cursor-pointer select-none px-4 py-2 flex items-center gap-3">
+            <span class="text-xs font-semibold uppercase px-2 py-0.5 rounded border ${sevColor(worstSev)}">${items.length}</span>
+            <span class="font-mono text-sm flex-1 min-w-0 truncate">${fileEsc}</span>
             <span class="text-xs text-zinc-600">▾</span>
           </summary>
-          <div class="px-5 pb-5 pt-1 space-y-4">
-            <div class="flex flex-wrap items-center gap-2 text-xs">
-              ${agentTags} ${tagBits}
-              ${f.confidence ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">confidence: ${escapeHtml(f.confidence)}</span>` : ""}
-              ${fileLine ? `<span class="ml-auto font-mono text-zinc-500 sm:hidden">${fileLine}</span>` : ""}
-            </div>
-            ${f.snippet ? `<pre class="rounded-lg overflow-x-auto"><code class="language-${lang}">${escapeHtml(f.snippet)}</code></pre>` : ""}
-            <div>
-              <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Why it matters</div>
-              <div class="prose prose-rb max-w-none text-sm">${md(f.explanation_md || f.explanation || "")}</div>
-            </div>
-            ${(f.fix_md || f.fix) ? `<div>
-              <div class="text-xs uppercase tracking-wider text-zinc-500 mb-1">Suggested fix</div>
-              <div class="prose prose-rb max-w-none text-sm">${md(f.fix_md || f.fix)}</div>
-            </div>` : ""}
-            ${f.verification ? `<div class="text-xs text-zinc-300"><span class="uppercase tracking-wider text-zinc-500">Verification:</span> ${escapeHtml(f.verification)}</div>` : ""}
+          <div class="px-3 pb-3 pt-1 space-y-2">
+            ${items.map(renderFindingCard).join("")}
           </div>
         </details>`;
       }).join("");
-      // Apply highlight.js on the new code blocks.
-      findingsHost.querySelectorAll("pre code").forEach(b => { try { hljs.highlightElement(b); } catch(e){} });
+    } else {
+      findingsHost.innerHTML = findings.map(renderFindingCard).join("");
+    }
+    // Apply highlight.js to all code blocks in findings.
+    findingsHost.querySelectorAll("pre code").forEach(b => { try { hljs.highlightElement(b); } catch(e){} });
+
+    // Triage summary line.
+    const counts = {seen:0, acked:0, dismissed:0};
+    for (const f of findings) {
+      const k = findingKey(f);
+      if (triage[k]) counts[triage[k]] = (counts[triage[k]]||0) + 1;
+    }
+    const tsum = document.getElementById("triage-summary");
+    const totalTriaged = counts.seen + counts.acked + counts.dismissed;
+    if (totalTriaged) {
+      tsum.textContent = `${counts.acked} acked · ${counts.seen} seen · ${counts.dismissed} dismissed`;
+    } else {
+      tsum.textContent = "";
     }
 
     // Per-agent reports — shows the summary for every agent that ran,
@@ -572,7 +690,7 @@
         </tbody>
       </table>`;
 
-    // Filter wiring
+    // ── Filter + triage filtering ──────────────────────────────────
     function applyFilter() {
       const q = document.getElementById("filter-text").value.toLowerCase();
       const minSev = document.getElementById("filter-sev").value;
@@ -580,13 +698,27 @@
       document.querySelectorAll(".finding").forEach(el => {
         const sev = el.dataset.sev;
         const text = el.dataset.text || "";
-        const okSev = !minSev || sevRank(sev) <= minRank || sev === minSev;
-        const okText = !q || text.includes(q);
-        el.style.display = (okSev && okText) ? "" : "none";
+        const state = el.dataset.state || "";
+        const okSev   = !minSev || sevRank(sev) <= minRank || sev === minSev;
+        const okText  = !q || text.includes(q);
+        const okTriage = showDismissed || state !== "dismissed";
+        el.style.display = (okSev && okText && okTriage) ? "" : "none";
       });
+      // Hide empty file-group sections in file view.
+      if (viewMode === "file") {
+        document.querySelectorAll("#findings > details").forEach(group => {
+          const visible = group.querySelectorAll(".finding").length > 0
+            && [...group.querySelectorAll(".finding")].some(c => c.style.display !== "none");
+          group.style.display = visible ? "" : "none";
+        });
+      }
     }
     document.getElementById("filter-text").oninput = applyFilter;
     document.getElementById("filter-sev").onchange = applyFilter;
+    const showDismissedEl = document.getElementById("show-dismissed");
+    showDismissedEl.checked = showDismissed;
+    showDismissedEl.onchange = () => { showDismissed = showDismissedEl.checked; applyFilter(); };
+
     document.getElementById("expand-all").onclick = () =>
       document.querySelectorAll(".finding,#spot-test-plan details").forEach(d => d.open = true);
     document.getElementById("collapse-all").onclick = () =>
@@ -598,6 +730,52 @@
       applyFilter();
       document.getElementById("findings").scrollIntoView({behavior:"smooth", block:"start"});
     });
+
+    // View toggle (severity / file).
+    document.querySelectorAll("#view-toggle button").forEach(btn => {
+      btn.onclick = () => {
+        if (viewMode === btn.dataset.view) return;
+        viewMode = btn.dataset.view;
+        document.querySelectorAll("#view-toggle button").forEach(b => {
+          if (b.dataset.view === viewMode) {
+            b.classList.add("bg-zinc-800","text-zinc-100");
+            b.classList.remove("text-zinc-400");
+          } else {
+            b.classList.remove("bg-zinc-800","text-zinc-100");
+            b.classList.add("text-zinc-400");
+          }
+        });
+        render();
+      };
+    });
+
+    // Triage button delegation. Click 👁/✓/🚫/↺ on any finding → updates
+    // localStorage and re-renders so the badge / fade reflects state.
+    document.getElementById("findings").addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-action]");
+      if (!btn) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const wrap = btn.closest(".triage-buttons");
+      if (!wrap) return;
+      const key = wrap.dataset.key;
+      const action = btn.dataset.action;
+      if (action === "clear") delete triage[key];
+      else triage[key] = action;
+      saveTriage(triage);
+      render();
+    });
+
+    // Reset all triage state.
+    document.getElementById("reset-triage").onclick = () => {
+      if (!Object.keys(triage).length) return;
+      if (!confirm(`Clear triage state for ${Object.keys(triage).length} findings?`)) return;
+      triage = {};
+      saveTriage(triage);
+      render();
+    };
+
+    applyFilter();
   }
 
   window.__rbRender = render;

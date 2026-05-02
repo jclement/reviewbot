@@ -260,6 +260,8 @@ type RunOptions struct {
 	Arch        string
 	BaseBranch  string // optional override
 	Personality string // "" | sexy | angry | sarcastic | butler
+	Staged      bool   // review staged-but-uncommitted changes
+	SinceN      int    // > 0 → review last N commits
 }
 
 // RunDetached starts the review container in detached mode and returns its
@@ -293,6 +295,15 @@ func RunDetached(opts RunOptions) error {
 	}
 	if opts.Personality != "" {
 		args = append(args, "-e", "REVIEWBOT_PERSONALITY="+opts.Personality)
+	}
+	if opts.Staged {
+		args = append(args, "-e", "REVIEWBOT_STAGED=1")
+	}
+	if opts.SinceN > 0 {
+		args = append(args, "-e", fmt.Sprintf("REVIEWBOT_SINCE=%d", opts.SinceN))
+	}
+	if len(opts.Config.SkipAgents) > 0 {
+		args = append(args, "-e", "REVIEWBOT_SKIP_AGENTS="+strings.Join(opts.Config.SkipAgents, ","))
 	}
 	for k, v := range opts.Config.ExtraEnv {
 		args = append(args, "-e", k+"="+v)

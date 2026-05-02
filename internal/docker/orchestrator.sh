@@ -79,32 +79,74 @@ detect_parent_branch() {
     echo "HEAD~1"
 }
 
-# ── Discover branches ───────────────────────────────────────────────────
+# ── Discover diff source ────────────────────────────────────────────────
+# Three modes:
+#   1. branch (default): diff between HEAD and detected/--base parent
+#   2. staged           : diff = `git diff --cached` (uncommitted-but-staged)
+#   3. since N          : diff between HEAD and HEAD~N
+# REVIEWBOT_STAGED=1 / REVIEWBOT_SINCE=N selects the alt modes.
 CURRENT_BRANCH=$(cd "$WS" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
-PARENT_BRANCH=$(detect_parent_branch)
-MERGE_BASE=$(cd "$WS" && git merge-base "$PARENT_BRANCH" HEAD 2>/dev/null || echo "")
 
-if [[ -z "$MERGE_BASE" ]]; then
-    err "Could not find a merge-base between HEAD and $PARENT_BRANCH"
-    err "Use --base <branch> to pick the parent explicitly."
-    exit 2
+cd "$WS"
+DIFF_MODE="branch"
+if [[ -n "${REVIEWBOT_STAGED:-}" ]]; then
+    DIFF_MODE="staged"
+elif [[ -n "${REVIEWBOT_SINCE:-}" ]]; then
+    DIFF_MODE="since"
 fi
+
+case "$DIFF_MODE" in
+    staged)
+        PARENT_BRANCH="(index)"
+        MERGE_BASE=$(git rev-parse HEAD 2>/dev/null || echo "?")
+        log "Mode:      reviewing staged (uncommitted) changes"
+        git diff --no-color --cached  > /review/diff.patch
+        git diff --name-only --cached > /review/files-changed.txt
+        git diff --shortstat --cached > /review/diff-shortstat.txt
+        echo "(uncommitted, staged)" > /review/commits.txt
+        ;;
+    since)
+        N="${REVIEWBOT_SINCE}"
+        if ! [[ "$N" =~ ^[0-9]+$ ]] || [[ "$N" -lt 1 ]]; then
+            err "Invalid REVIEWBOT_SINCE=$N (need a positive integer)"
+            exit 2
+        fi
+        PARENT_BRANCH="HEAD~$N"
+        MERGE_BASE=$(git rev-parse "HEAD~$N" 2>/dev/null || echo "")
+        if [[ -z "$MERGE_BASE" ]]; then
+            err "HEAD~$N does not exist (only $(git rev-list --count HEAD) commits in history)"
+            exit 2
+        fi
+        log "Mode:      reviewing last $N commits"
+        git diff --no-color "$MERGE_BASE"..HEAD > /review/diff.patch
+        git diff --name-only "$MERGE_BASE"..HEAD > /review/files-changed.txt
+        git diff --shortstat "$MERGE_BASE"..HEAD > /review/diff-shortstat.txt
+        git log --pretty=format:'%H %s' "$MERGE_BASE"..HEAD > /review/commits.txt
+        ;;
+    branch)
+        PARENT_BRANCH=$(detect_parent_branch)
+        MERGE_BASE=$(git merge-base "$PARENT_BRANCH" HEAD 2>/dev/null || echo "")
+        if [[ -z "$MERGE_BASE" ]]; then
+            err "Could not find a merge-base between HEAD and $PARENT_BRANCH"
+            err "Use --base <branch> to pick the parent explicitly."
+            exit 2
+        fi
+        git diff --no-color "$MERGE_BASE"..HEAD > /review/diff.patch
+        git diff --name-only "$MERGE_BASE"..HEAD > /review/files-changed.txt
+        git diff --shortstat "$MERGE_BASE"..HEAD > /review/diff-shortstat.txt
+        git log --pretty=format:'%H %s' "$MERGE_BASE"..HEAD > /review/commits.txt
+        ;;
+esac
 
 log "Branch:    $CURRENT_BRANCH"
 log "Parent:    $PARENT_BRANCH"
 log "Base SHA:  ${MERGE_BASE:0:12}"
 
-# ── Build the review bundle ──────────────────────────────────────────────
-cd "$WS"
-git diff --no-color "$MERGE_BASE"..HEAD > /review/diff.patch
-git diff --name-only "$MERGE_BASE"..HEAD > /review/files-changed.txt
-git diff --shortstat "$MERGE_BASE"..HEAD > /review/diff-shortstat.txt
-git log --pretty=format:'%H %s' "$MERGE_BASE"..HEAD > /review/commits.txt
-
 cat > /review/branch.txt <<EOF
 branch=$CURRENT_BRANCH
 parent=$PARENT_BRANCH
 merge_base=$MERGE_BASE
+mode=$DIFF_MODE
 EOF
 
 # repo-meta.json: a tiny detection of language/build system for the agents.
@@ -210,27 +252,88 @@ esac
 [[ -n "$PERSONALITY" ]] && log "Personality: $PERSONALITY"
 
 # ── Pick agents to run based on what's in the diff ──────────────────────
-# All agents get the diff; some are no-ops if their file types aren't
-# present (they'll output empty findings and exit fast). That's fine.
-AGENTS_TO_RUN=(
-    supply-chain
-    security
-    subtle-bugs
-    performance
-    concurrency
-    error-handling
-    tests
-    api-contract
-    code-quality
-    architecture
-    observability
-    db-migrations
-    frontend
-    ui-ux
-    docs
-    configuration
-    repo-hygiene
+# Always-run agents inspect general code; file-typed agents only run when
+# their kind of file is in the diff. This saves cost on small PRs without
+# losing coverage (the always-run ones still cover the same territory at
+# a different angle).
+ALL_AGENTS=(
+    supply-chain   security        subtle-bugs    performance    concurrency
+    error-handling tests           api-contract   code-quality   architecture
+    observability  db-migrations   frontend       ui-ux          docs
+    configuration  repo-hygiene
 )
+
+# Always run regardless of diff content.
+ALWAYS_RUN=(security subtle-bugs performance concurrency error-handling
+            tests api-contract code-quality architecture observability
+            repo-hygiene)
+
+# Conditional agents — only run when their patterns match files-changed.txt.
+# Patterns are extended-regex against full paths.
+declare -A AGENT_TRIGGER=(
+    [supply-chain]='(^|/)(package(-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|go\.(mod|sum)|Cargo\.(toml|lock)|requirements.*\.txt|pyproject\.toml|Pipfile(\.lock)?|poetry\.lock|uv\.lock|Gemfile(\.lock)?|composer\.(json|lock)|pom\.xml|build\.gradle.*|Podfile.*|Package\.swift|.*\.csproj|flake\.nix|Dockerfile.*|.*\.dockerfile)$|^\.github/workflows/'
+    [db-migrations]='\.sql$|/migrations?/|/schema\.(prisma|rb)$|/db/migrate/'
+    [frontend]='\.(tsx|jsx|vue|svelte|html|htm|css|scss|sass|less)$|/components?/.*\.(ts|js)$'
+    [ui-ux]='\.(tsx|jsx|vue|svelte|html|htm|css|scss|sass|less)$|/components?/.*\.(ts|js)$'
+    [docs]='\.md$|^README|^CHANGELOG|^docs?/|/CONTRIBUTING'
+    [configuration]='Dockerfile|\.dockerfile$|\.ya?ml$|\.tf$|\.tfvars$|\.toml$|\.ini$|\.conf$|/k8s/|/kubernetes/|/helm/|^\.github/workflows/|^\.env'
+)
+
+# Compute the run-set.
+files_in_diff=$(cat /review/files-changed.txt 2>/dev/null)
+AGENTS_TO_RUN=()
+SKIPPED_AGENTS=()
+for agent in "${ALL_AGENTS[@]}"; do
+    keep=false
+    # Always-run? in.
+    for a in "${ALWAYS_RUN[@]}"; do
+        if [[ "$a" == "$agent" ]]; then keep=true; break; fi
+    done
+    # Triggered by diff content? in.
+    if [[ "$keep" == "false" ]]; then
+        pat="${AGENT_TRIGGER[$agent]:-}"
+        if [[ -n "$pat" ]] && echo "$files_in_diff" | grep -Eq "$pat"; then
+            keep=true
+        fi
+    fi
+    if [[ "$keep" == "true" ]]; then
+        AGENTS_TO_RUN+=("$agent")
+    else
+        SKIPPED_AGENTS+=("$agent")
+    fi
+done
+
+# Honor the user's per-project skip list (.reviewbot/config.yaml -> skip_agents).
+# Passed in as REVIEWBOT_SKIP_AGENTS=foo,bar,baz
+if [[ -n "${REVIEWBOT_SKIP_AGENTS:-}" ]]; then
+    IFS=',' read -ra USER_SKIPS <<< "$REVIEWBOT_SKIP_AGENTS"
+    new_run=()
+    for a in "${AGENTS_TO_RUN[@]}"; do
+        skip=false
+        for s in "${USER_SKIPS[@]}"; do
+            [[ "$a" == "$s" ]] && skip=true && break
+        done
+        if [[ "$skip" == "true" ]]; then
+            SKIPPED_AGENTS+=("$a")
+        else
+            new_run+=("$a")
+        fi
+    done
+    AGENTS_TO_RUN=("${new_run[@]}")
+fi
+
+# Surface skipped agents to the report and write a sentinel for each so
+# the renderer can show them as "skipped" in the agent grid.
+mkdir -p /review/out/.status
+for s in "${SKIPPED_AGENTS[@]}"; do
+    echo "skipped" > "/review/out/.status/$s"
+done
+
+if (( ${#SKIPPED_AGENTS[@]} > 0 )); then
+    log "Running ${#AGENTS_TO_RUN[@]}/${#ALL_AGENTS[@]} agents (skipped: ${SKIPPED_AGENTS[*]})"
+else
+    log "Running all ${#AGENTS_TO_RUN[@]} agents"
+fi
 
 # ── Skeleton report so the browser opens immediately ─────────────────────
 /review/render.sh "starting" "$CURRENT_BRANCH" "$PARENT_BRANCH" "$MERGE_BASE"
@@ -368,6 +471,15 @@ ok "Consolidation complete."
 # Stop the periodic re-render and do one final render.
 touch /review/out/.stop_rerender
 wait "$RERENDER_PID" 2>/dev/null || true
+
+# Mirror the final findings (spot-test-plan + consolidator ran *after* the
+# rerender_loop stopped, so they weren't picked up by it). Without this,
+# ~/.cache/reviewbot/runs/<id>/findings/ would be missing the two most
+# important files for follow-up debugging.
+mkdir -p /review/out/raw /review/out/findings
+cp -f "$RAW"/*           /review/out/raw/      2>/dev/null
+cp -f "$FINDINGS"/*.json /review/out/findings/ 2>/dev/null
+
 /review/render.sh "complete" "$CURRENT_BRANCH" "$PARENT_BRANCH" "$MERGE_BASE"
 touch /review/out/.done
 
