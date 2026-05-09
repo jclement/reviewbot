@@ -20,7 +20,7 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: jdx/mise-action@v4
         with: { experimental: true }
-      - uses: sigstore/cosign-installer@v4.1.1
+      - uses: sigstore/cosign-installer@v4.1.2
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2.15"
